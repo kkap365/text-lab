@@ -7,17 +7,25 @@
 import { useState } from "react";
 const API = process.env.NEXT_PUBLIC_API_BASE_URL;
 
-export default function InputCard({ onResult }) {
+export default function InputCard({ onResult, token }) {
   const [text, setText] = useState("今天的风很轻，适合把脑海里的想法慢慢写下来。");
   const [error, setError] = useState("");
 
-  async function handleAnalyze() {
+    async function handleAnalyze() {
     setError("");
+
+    if (!token) {
+      setError("请先登录再分析");
+      return;
+    }
 
     try {
       const res = await fetch(`${API}/api/analyze`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ text }),
       });
 

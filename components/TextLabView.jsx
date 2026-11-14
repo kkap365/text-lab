@@ -41,7 +41,7 @@ export default function TextLabView() {
         <LoginCard onLogin={handleLogin} />
       )}
 
-      <InputCard onResult={setResult} />
+       <InputCard onResult={setResult} token={token} />
       <ResultCard result={result} />
     </AnimatedCardGrid>
   );

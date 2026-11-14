@@ -135,13 +135,20 @@ def get_profile():
     return profile
 
 @app.get("/api/history")
-def history(page: int = 1, size: int = 10):
+def history(page: int = 1, size: int = 10, user_id: int = Depends(get_current_user)):
     offset = (page - 1) * size
     with engine.connect() as conn:
-        total = conn.execute(text("SELECT COUNT(*) FROM analyses")).fetchone()[0]
-        result = conn.execute(text(
-            f"SELECT text, pinyin, score, label, created_at FROM analyses ORDER BY id DESC LIMIT {size} OFFSET {offset}"
-        ))
+        total = conn.execute(
+            text("SELECT COUNT(*) FROM analyses WHERE user_id = :uid"),
+            {"uid": user_id},
+        ).fetchone()[0]
+        result = conn.execute(
+            text(
+                "SELECT text, pinyin, score, label, created_at FROM analyses "
+                "WHERE user_id = :uid ORDER BY id DESC LIMIT :lim OFFSET :off"
+            ),
+            {"uid": user_id, "lim": size, "off": offset},
+        )
         records = []
         for row in result:
             records.append({
@@ -154,15 +161,24 @@ def history(page: int = 1, size: int = 10):
     return {"records": records, "total": total, "page": page, "size": size}
 
 @app.delete("/api/history/{record_id}")
-def delete_history(record_id: int):
+def delete_history(record_id: int, user_id: int = Depends(get_current_user)):
     with engine.connect() as conn:
-        result = conn.execute(
+        row = conn.execute(
+            text("SELECT user_id FROM analyses WHERE id = :id"),
+            {"id": record_id},
+        ).fetchone()
+        # 404 与 403 分开：先判存在，再判归属。
+        # 若统一返回 403，会泄露「这条记录存在」这一信息。
+        if row is None:
+            raise HTTPException(status_code=404, detail="记录不存在")
+        if row[0] != user_id:
+            raise HTTPException(status_code=403, detail="无权删除该记录")
+        conn.execute(
             text("DELETE FROM analyses WHERE id = :id"),
-            {"id": record_id}
+            {"id": record_id},
         )
         conn.commit()
     return {"ok": True}
-
 
 def score_label(score):
     if score >= 0.6:
