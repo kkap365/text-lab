@@ -9,13 +9,7 @@ from datetime import datetime, timezone
 from sqlalchemy import create_engine, text
 import redis
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-def load_history():
-    with engine.connect() as conn:
-        result = conn.execute(text(
-            "SELECT text, pinyin, score, label, created_at "
-            "FROM analyses ORDER BY id DESC LIMIT 20"
-        ))
-        return [dict(row) for row in result]
+
 
 class RegisterRequest(BaseModel):
     username: str
@@ -188,10 +182,6 @@ def score_label(score):
     else:
         return "中性"
 
-@app.get("/api/history")
-def history():
-    records = load_history()   # 读出文件里的全部记录
-    return records
 
 @app.get("/api/hot")
 def hot():
