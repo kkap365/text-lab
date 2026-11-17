@@ -263,3 +263,95 @@ def analyze(req: AnalyzeRequest, user_id: int = Depends(get_current_user)):
 ## 许可
 
 MIT
+
+---
+
+## 环境变量与部署
+
+### 后端
+
+| 变量 | 说明 | 缺失后果 |
+|---|---|---|
+| `DATABASE_URL` | MySQL 连接串 | **启动能成功，但第一次查库才 500** |
+| `JWT_SECRET` | token 签名密钥 | 用开发默认值，重启后所有 token 失效 |
+| `REDIS_HOST` / `REDIS_PORT` | Redis 地址，默认 `localhost:6379` | 缓存全部失效，降级为直接计算 |
+
+**部署时通过启动脚本注入，不写死在代码里**（`/root/start_backend.sh`）：
+
+```bash
+#!/bin/bash
+set -e
+
+export DATABASE_URL="mysql+pymysql://<user>:<password>@localhost/<db>"
+
+# 启动前校验：缺失或仍是占位符就立刻退出
+if [ -z "$DATABASE_URL" ]; then
+  echo "FATAL: DATABASE_URL 未设置" >&2
+  exit 1
+fi
+if [[ "$DATABASE_URL" == *"user:password"* ]]; then
+  echo "FATAL: DATABASE_URL 还是占位符" >&2
+  exit 1
+fi
+
+cd /root/zero-to-tech/backend
+exec /usr/bin/python3 -m uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+**为什么检查放在脚本而不是代码里**：应用代码不知道部署环境，而测试会 `import main`（那时没有环境变量）。放在启动脚本，校验只在真正部署时执行。
+
+### 前端
+
+| 变量 | 说明 |
+|---|---|
+| `NEXT_PUBLIC_API_BASE_URL` | 后端地址。**留空则走同源相对路径 `/api`**，经 Nginx 反代到后端 |
+
+**留空是推荐配置**：
+
+```
+NEXT_PUBLIC_API_BASE_URL=
+```
+
+请求变成 `/api/login`（相对路径）→ 同源 → Nginx 的 `location /api/` 转发到 `127.0.0.1:8000`。
+这样后端端口不需要对公网开放。
+
+> 注意：`NEXT_PUBLIC_*` 是**构建时内联**的，改完必须重新 `npm run build` 再传 `out/`，改服务器上的文件无效。
+
+---
+
+## 故障排查
+
+记录几个上线过程中真实踩到的坑，都表现为「页面打不开」或「接口报错」，但原因完全不同。
+
+### 1. 所有 `/api` 请求返回 HTML
+
+**现象**：访问 `/api/profile` 返回的是前端页面，不是 JSON。
+**原因**：Nginx 有两个 `server` 块 `listen 80` 且 `server_name` 相同，Nginx 只加载第一个，带 `location /api/` 的那个被忽略，请求落到 `try_files` 返回 `index.html`。
+**定位**：`nginx -t` 会报 `conflicting server name "..." on 0.0.0.0:80, ignored`。
+**修复**：合并成一个 server 块，删掉重复的配置文件。
+
+### 2. 前端请求发到 `undefined/api/login`
+
+**现象**：点登录提示"请求失败，请确认后端已启动"，Network 里 URL 是 `/undefined/api/login`。
+**原因**：`process.env.NEXT_PUBLIC_API_BASE_URL` 是 `undefined`，拼进路径就成了 `undefined/api/...`。
+**修复**：构建时设置 `.env.local`（留空走相对路径），或把代码写成 `process.env.NEXT_PUBLIC_API_BASE_URL || ""`。
+
+### 3. 接口 500，日志是 `Access denied for user 'user'@'localhost'`
+
+**现象**：`/api/profile` 正常（不查库），`/api/login` 500。
+**原因**：`DATABASE_URL` 用了代码里的占位符默认值，服务能启动，但第一次连数据库才失败。
+**修复**：部署时注入真实连接串；启动脚本里加校验。
+
+### 4. 接口返回 `null`，但状态码是 200
+
+**现象**：`/api/history` 返回 `null`，前端 `body["records"]` 报 `TypeError`。
+**原因**：重构时误删了函数末尾的 `return {"records": ...}`。**服务照常启动，健康检查也通过。**
+**定位**：pytest 立刻红了 3 个用例。
+**教训**：健康检查通过不等于业务接口正常；有测试才能抓到这类"静默失败"。
+
+### 5. `tar -xzf 包 | head` 解压不完整
+
+**现象**：解压后 `index.html` 更新了，但 `_next/static/chunks/` 里的新文件没落地。
+**原因**：`head` 读够行数就退出，关闭管道，`tar` 收到 SIGPIPE 被提前终止。
+**修复**：解压时不要接 `head`。
+
